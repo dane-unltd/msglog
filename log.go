@@ -1,26 +1,26 @@
 package msglog
 
 import (
-	"bytes"
-	"encoding/json"
-	"fmt"
+	"bufio"
 	"log"
 	"os"
 	"sync/atomic"
+	"time"
+	"unsafe"
 )
 
 type Log struct {
-	name   string
-	f      *os.File
-	in     chan pack
-	lastID int64
+	name     string
+	f        *os.File
+	in       chan pack
+	lastTime int64
 }
 
 type Msg struct {
-	ID     int64
-	Topic  string
-	From   string
+	Time   int64
+	From   int64
 	Pos    int64
+	ID     int64
 	Length int64
 }
 
@@ -32,7 +32,7 @@ type pack struct {
 var logs = make(map[string]*Log, 10)
 
 func NewLog(name string) (*Log, error) {
-	l := &Log{name: name, in: make(chan pack), lastID: -1}
+	l := &Log{name: name, in: make(chan pack), lastTime: -1}
 
 	f, err := os.Create(name)
 	if err != nil {
@@ -44,43 +44,72 @@ func NewLog(name string) (*Log, error) {
 	return l, nil
 }
 
+const uint64Size = int(unsafe.Sizeof(uint64(0)))
+
+func encodeInt(xi int64, buf [9]byte) []byte {
+	var x uint64
+	if xi < 0 {
+		x = uint64(^xi<<1) | 1
+	} else {
+		x = uint64(xi << 1)
+	}
+	if x <= 0x7F {
+		buf[0] = uint8(x)
+		return buf[0:1]
+	}
+	i := uint64Size
+	for x > 0 {
+		buf[i] = uint8(x)
+		x >>= 8
+		i--
+	}
+	buf[i] = uint8(i - uint64Size) // = loop count, negated
+	return buf[i : uint64Size+1]
+}
+
 func (l *Log) run() {
-	nextId := int64(0)
+	nextTime := int64(0)
 	pos := int64(0)
+	buffered := int64(0)
+
+	var intbuf [9]byte
+	buf := bufio.NewWriter(l.f)
+
+	clk := time.Tick(time.Millisecond)
 	for {
-		p := <-l.in
-		buf := new(bytes.Buffer)
-		enc := json.NewEncoder(buf)
-		p.msg.ID = nextId
-		p.msg.Pos = pos
-		err := enc.Encode(p.msg)
-		if err != nil {
-			log.Println(err)
-			continue
-		}
-		fmt.Println("write id", p.msg.ID)
+		select {
+		case p := <-l.in:
+			if int64(len(p.data)) < p.msg.Length {
+				log.Println("not enough data")
+				continue
+			}
 
-		fmt.Println(len(p.data), p.msg.Length)
-		if int64(len(p.data)) < p.msg.Length {
-			log.Println("not enough data")
-			continue
-		}
+			n, _ := buf.Write(encodeInt(nextTime, intbuf))
+			pos += int64(n)
+			n, _ = buf.Write(encodeInt(p.msg.From, intbuf))
+			pos += int64(n)
+			n, _ = buf.Write(encodeInt(pos, intbuf))
+			pos += int64(n)
+			n, _ = buf.Write(encodeInt(p.msg.ID, intbuf))
+			pos += int64(n)
+			n, _ = buf.Write(encodeInt(p.msg.Length, intbuf))
+			pos += int64(n)
+			n, _ = buf.Write(p.data[:p.msg.Length])
+			pos += int64(n)
 
-		n, err := l.f.Write(buf.Bytes())
-		fmt.Println(n, err)
-		if err != nil {
-			log.Println(err)
-			continue
+			buffered++
+			nextTime++
+
+		case <-clk:
+			if buf.Buffered() > 00 {
+				err := buf.Flush()
+				if err != nil {
+					log.Println(err)
+				}
+				atomic.AddInt64(&l.lastTime, buffered)
+				buffered = 0
+			}
 		}
-		pos += int64(n)
-		n, err = l.f.Write(p.data[:p.msg.Length])
-		fmt.Println(n, err)
-		if err != nil {
-			log.Println(err)
-		}
-		pos += int64(n)
-		nextId++
-		atomic.AddInt64(&l.lastID, 1)
 	}
 }
 
