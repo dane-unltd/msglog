@@ -16,6 +16,7 @@ type Consumer struct {
 	lastTime int64
 	buf      *bufio.Reader
 	intbuf   [9]byte
+	data     []byte
 }
 
 func NewConsumer(name string) (*Consumer, error) {
@@ -100,13 +101,15 @@ func (c *Consumer) Next() (Msg, []byte, error) {
 
 	c.lastTime = msg.Time
 
-	buf := make([]byte, msg.Length)
-	_, err = io.ReadFull(c.buf, buf)
+	if int64(len(c.data)) < msg.Length {
+		c.data = make([]byte, msg.Length)
+	}
+	_, err = io.ReadFull(c.buf, c.data[:msg.Length])
 	if err != nil {
 		return Msg{}, nil, err
 	}
 
-	return msg, buf, nil
+	return msg, c.data[:msg.Length], nil
 }
 
 func (c *Consumer) Close() {

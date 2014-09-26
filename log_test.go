@@ -16,11 +16,11 @@ func TestLog(t *testing.T) {
 	}
 
 	go func() {
-		for i := 0; i < 1e6; i++ {
+		for i := 0; i < 5e6; i++ {
 			l.Push(Msg{From: 1234, Length: 5, ID: int64(i) + 5}, []byte("hello"))
 		}
 	}()
-	for i := 0; i < 1e6; i++ {
+	for i := 0; i < 5e6; i++ {
 		msg, data, err := c1.Next()
 		if err != nil {
 			t.Error(err)
