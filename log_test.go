@@ -5,7 +5,7 @@ import (
 )
 
 func TestLog(t *testing.T) {
-	l, err := NewLog("test")
+	l, err := New("test")
 	if err != nil {
 		t.Error(err)
 	}

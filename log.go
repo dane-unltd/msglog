@@ -30,7 +30,7 @@ type pack struct {
 	data []byte
 }
 
-func NewLog(filename string) (*Log, error) {
+func New(filename string) (*Log, error) {
 	l := &Log{filename: filename, in: make(chan pack)}
 
 	f, err := os.Create(filename)
