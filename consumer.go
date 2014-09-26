@@ -15,7 +15,6 @@ type Consumer struct {
 	f        *os.File
 	lastTime int64
 	buf      *bufio.Reader
-	intbuf   [9]byte
 	data     []byte
 }
 
@@ -33,7 +32,8 @@ func NewConsumer(name string) (*Consumer, error) {
 
 var errBadUint = errors.New("gob: encoded unsigned integer out of range")
 
-func decodeInt(r io.Reader, buf [9]byte) (xi int64, width int, err error) {
+func decodeInt(r io.Reader) (xi int64, width int, err error) {
+	var buf [9]byte
 	var x uint64
 	width = 1
 	n, err := io.ReadFull(r, buf[0:width])
@@ -78,23 +78,23 @@ func (c *Consumer) Next() (Msg, []byte, error) {
 	}
 	msg := Msg{}
 	var err error
-	msg.Time, _, err = decodeInt(c.buf, c.intbuf)
+	msg.Time, _, err = decodeInt(c.buf)
 	if err != nil {
 		return Msg{}, nil, err
 	}
-	msg.From, _, err = decodeInt(c.buf, c.intbuf)
+	msg.From, _, err = decodeInt(c.buf)
 	if err != nil {
 		return Msg{}, nil, err
 	}
-	msg.Pos, _, err = decodeInt(c.buf, c.intbuf)
+	msg.Pos, _, err = decodeInt(c.buf)
 	if err != nil {
 		return Msg{}, nil, err
 	}
-	msg.ID, _, err = decodeInt(c.buf, c.intbuf)
+	msg.ID, _, err = decodeInt(c.buf)
 	if err != nil {
 		return Msg{}, nil, err
 	}
-	msg.Length, _, err = decodeInt(c.buf, c.intbuf)
+	msg.Length, _, err = decodeInt(c.buf)
 	if err != nil {
 		return Msg{}, nil, err
 	}
