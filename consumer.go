@@ -33,7 +33,6 @@ func NewConsumer(name string) (*Consumer, error) {
 var errBadUint = errors.New("gob: encoded unsigned integer out of range")
 
 func decodeInt(r *bufio.Reader) (xi int64, width int, err error) {
-	var buf [8]byte
 	var x uint64
 	width = 1
 	var b byte
@@ -51,15 +50,12 @@ func decodeInt(r *bufio.Reader) (xi int64, width int, err error) {
 		err = errBadUint
 		return
 	}
-	width, err = io.ReadFull(r, buf[0:n])
-	if err != nil {
-		if err == io.EOF {
-			err = io.ErrUnexpectedEOF
-		}
-		return
-	}
 	// Could check that the high byte is zero but it's not worth it.
-	for _, b := range buf[0:width] {
+	for i := 0; i < n; i++ {
+		b, err = r.ReadByte()
+		if err != nil {
+			return
+		}
 		x = x<<8 | uint64(b)
 	}
 	width++ // +1 for length byte
