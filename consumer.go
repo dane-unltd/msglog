@@ -3,7 +3,6 @@ package msglog
 import (
 	"bufio"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"sync/atomic"
@@ -11,29 +10,25 @@ import (
 )
 
 type Consumer struct {
-	l        *Log
-	f        *os.File
-	lastTime int64
-	buf      *bufio.Reader
-	data     []byte
+	l       *Log
+	f       *os.File
+	nextSeq uint64
+	buf     *bufio.Reader
+	data    []byte
+	payload uint64
 }
 
-func NewConsumer(name string) (*Consumer, error) {
-	l, ok := logs[name]
-	if !ok {
-		return nil, errors.New(fmt.Sprintf("log not found: %s", name))
-	}
-	f, err := os.Open(name)
+func (l *Log) Consumer() (*Consumer, error) {
+	f, err := os.Open(l.filename)
 	if err != nil {
 		return nil, err
 	}
-	return &Consumer{f: f, l: l, lastTime: -1, buf: bufio.NewReader(f)}, nil
+	return &Consumer{f: f, l: l, buf: bufio.NewReader(f)}, nil
 }
 
 var errBadUint = errors.New("gob: encoded unsigned integer out of range")
 
-func decodeInt(r *bufio.Reader) (xi int64, width int, err error) {
-	var x uint64
+func decodeInt(r *bufio.Reader) (x uint64, width int, err error) {
 	width = 1
 	var b byte
 	var n int
@@ -43,7 +38,7 @@ func decodeInt(r *bufio.Reader) (xi int64, width int, err error) {
 	}
 	if b <= 0x7f {
 		x = uint64(b)
-		goto done
+		return
 	}
 	n = -int(int8(b))
 	if n > uint64Size {
@@ -59,54 +54,69 @@ func decodeInt(r *bufio.Reader) (xi int64, width int, err error) {
 		x = x<<8 | uint64(b)
 	}
 	width++ // +1 for length byte
-
-done:
-	if x&1 != 0 {
-		xi = ^int64(x >> 1)
-		return
-	}
-	xi = int64(x >> 1)
 	return
 }
 
-func (c *Consumer) Next() (Msg, []byte, error) {
-	for c.lastTime == atomic.LoadInt64(&c.l.lastTime) {
+func (c *Consumer) Next() (msg Msg, err error) {
+	if c.payload > 0 {
+		n := uint64(c.buf.Buffered())
+		if n > c.payload {
+			_, err = c.Payload()
+			if err != nil {
+				return
+			}
+		} else {
+			c.payload -= n
+			_, err = c.f.Seek(int64(c.payload), 1)
+			c.buf.Reset(c.f)
+			c.payload = 0
+		}
+	}
+	for c.nextSeq == atomic.LoadUint64(&c.l.nextSeq) {
 		time.Sleep(time.Millisecond)
 	}
-	msg := Msg{}
-	var err error
+	msg.Seq, _, err = decodeInt(c.buf)
+	if err != nil {
+		return
+	}
 	msg.Time, _, err = decodeInt(c.buf)
 	if err != nil {
-		return Msg{}, nil, err
+		return
 	}
 	msg.From, _, err = decodeInt(c.buf)
 	if err != nil {
-		return Msg{}, nil, err
+		return
 	}
 	msg.Pos, _, err = decodeInt(c.buf)
 	if err != nil {
-		return Msg{}, nil, err
+		return
 	}
 	msg.ID, _, err = decodeInt(c.buf)
 	if err != nil {
-		return Msg{}, nil, err
+		return
 	}
 	msg.Length, _, err = decodeInt(c.buf)
 	if err != nil {
-		return Msg{}, nil, err
+		return
 	}
 
-	c.lastTime = msg.Time
+	c.nextSeq = msg.Seq + 1
+	c.payload = msg.Length
+	return
+}
 
-	if int64(len(c.data)) < msg.Length {
-		c.data = make([]byte, msg.Length)
-	}
-	_, err = io.ReadFull(c.buf, c.data[:msg.Length])
-	if err != nil {
-		return Msg{}, nil, err
+func (c *Consumer) Payload() (pl []byte, err error) {
+	if c.payload == 0 {
+		return
 	}
 
-	return msg, c.data[:msg.Length], nil
+	if uint64(len(c.data)) < c.payload {
+		c.data = make([]byte, c.payload)
+	}
+	pl = c.data[:c.payload]
+	_, err = io.ReadFull(c.buf, pl)
+	c.payload = 0
+	return
 }
 
 func (c *Consumer) Close() {
