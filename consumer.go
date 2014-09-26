@@ -32,15 +32,16 @@ func NewConsumer(name string) (*Consumer, error) {
 
 var errBadUint = errors.New("gob: encoded unsigned integer out of range")
 
-func decodeInt(r io.Reader) (xi int64, width int, err error) {
-	var buf [9]byte
+func decodeInt(r *bufio.Reader) (xi int64, width int, err error) {
+	var buf [8]byte
 	var x uint64
 	width = 1
-	n, err := io.ReadFull(r, buf[0:width])
-	if n == 0 {
+	var b byte
+	var n int
+	b, err = r.ReadByte()
+	if err != nil {
 		return
 	}
-	b := buf[0]
 	if b <= 0x7f {
 		x = uint64(b)
 		goto done
