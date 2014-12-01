@@ -16,6 +16,7 @@ type Consumer struct {
 	buf     *bufio.Reader
 	data    []byte
 	payload uint64
+	current Msg
 }
 
 func (l *Log) Consumer() (*Consumer, error) {
@@ -57,6 +58,10 @@ func decodeInt(r *bufio.Reader) (x uint64, width int, err error) {
 	return
 }
 
+func (c *Consumer) HasNext() bool {
+	return c.nextSeq != atomic.LoadUint64(&c.l.nextSeq)
+}
+
 func (c *Consumer) Next() (msg Msg, err error) {
 	if c.payload > 0 {
 		n := uint64(c.buf.Buffered())
@@ -67,7 +72,10 @@ func (c *Consumer) Next() (msg Msg, err error) {
 			}
 		} else {
 			c.payload -= n
-			_, err = c.f.Seek(int64(c.payload), 1)
+			_, err = c.f.Seek(int64(c.payload), os.SEEK_CUR)
+			if err != nil {
+				return
+			}
 			c.buf.Reset(c.f)
 			c.payload = 0
 		}
@@ -91,6 +99,10 @@ func (c *Consumer) Next() (msg Msg, err error) {
 	if err != nil {
 		return
 	}
+	msg.PrevPos, _, err = decodeInt(c.buf)
+	if err != nil {
+		return
+	}
 	msg.ID, _, err = decodeInt(c.buf)
 	if err != nil {
 		return
@@ -102,6 +114,7 @@ func (c *Consumer) Next() (msg Msg, err error) {
 
 	c.nextSeq = msg.Seq + 1
 	c.payload = msg.Length
+	c.current = msg
 	return
 }
 
@@ -117,6 +130,40 @@ func (c *Consumer) Payload() (pl []byte, err error) {
 	_, err = io.ReadFull(c.buf, pl)
 	c.payload = 0
 	return
+}
+
+func (c *Consumer) Goto(seq uint64) error {
+	if seq == 0 {
+		_, err := c.f.Seek(0, os.SEEK_SET)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	if seq == c.current.Seq {
+		_, err := c.f.Seek(int64(c.current.Pos), os.SEEK_SET)
+		if err != nil {
+			return err
+		}
+		return nil
+	}
+	for seq > c.current.Seq+1 {
+		_, err := c.Next()
+		if err != nil {
+			return err
+		}
+	}
+	for seq <= c.current.Seq {
+		_, err := c.f.Seek(int64(c.current.PrevPos), os.SEEK_SET)
+		if err != nil {
+			return err
+		}
+		_, err = c.Next()
+		if err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (c *Consumer) Close() {
