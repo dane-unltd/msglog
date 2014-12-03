@@ -17,6 +17,7 @@ type Consumer struct {
 	data    []byte
 	payload uint64
 	current Msg
+	abort   chan struct{}
 }
 
 func (l *Log) Consumer() (*Consumer, error) {
@@ -24,7 +25,7 @@ func (l *Log) Consumer() (*Consumer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Consumer{f: f, l: l, buf: bufio.NewReader(f)}, nil
+	return &Consumer{f: f, l: l, buf: bufio.NewReader(f), abort: make(chan struct{}, 1)}, nil
 }
 
 var errBadUint = errors.New("gob: encoded unsigned integer out of range")
@@ -81,6 +82,12 @@ func (c *Consumer) Next() (msg Msg, err error) {
 		}
 	}
 	for c.nextSeq == atomic.LoadUint64(&c.l.nextSeq) {
+		select {
+		case <-abort:
+			err = errors.New("Consumer: Closed.")
+			return
+		default:
+		}
 		time.Sleep(time.Millisecond)
 	}
 	msg.Seq, _, err = decodeInt(c.buf)
@@ -132,6 +139,16 @@ func (c *Consumer) Payload() (pl []byte, err error) {
 	return
 }
 
+func (c *Consumer) Read(buf []byte) (int, error) {
+	pl, err := c.Payload()
+	copy(buf, pl)
+
+	if len(pl) < len(buf) {
+		return len(pl)
+	}
+	return len(buf)
+}
+
 func (c *Consumer) Goto(seq uint64) error {
 	c.nextSeq = seq
 	if seq == 0 {
@@ -176,5 +193,6 @@ func (c *Consumer) Goto(seq uint64) error {
 }
 
 func (c *Consumer) Close() {
+	c.abort <- struct{}{}
 	c.f.Close()
 }
