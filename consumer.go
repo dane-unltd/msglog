@@ -133,7 +133,10 @@ func (c *Consumer) Payload() (pl []byte, err error) {
 }
 
 func (c *Consumer) Goto(seq uint64) error {
+	c.nextSeq = seq
 	if seq == 0 {
+		c.buf.Reset(c.f)
+		c.payload = 0
 		_, err := c.f.Seek(0, os.SEEK_SET)
 		if err != nil {
 			return err
@@ -141,7 +144,10 @@ func (c *Consumer) Goto(seq uint64) error {
 		return nil
 	}
 	if seq == c.current.Seq {
+		c.buf.Reset(c.f)
+		c.payload = 0
 		_, err := c.f.Seek(int64(c.current.Pos), os.SEEK_SET)
+		c.nextSeq = c.current.Seq
 		if err != nil {
 			return err
 		}
@@ -154,7 +160,10 @@ func (c *Consumer) Goto(seq uint64) error {
 		}
 	}
 	for seq <= c.current.Seq {
+		c.buf.Reset(c.f)
+		c.payload = 0
 		_, err := c.f.Seek(int64(c.current.PrevPos), os.SEEK_SET)
+		c.nextSeq = c.current.Seq - 1
 		if err != nil {
 			return err
 		}

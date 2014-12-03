@@ -13,6 +13,7 @@ type Log struct {
 	filename string
 	f        *os.File
 	in       chan pack
+	quit     chan chan struct{}
 	nextSeq  uint64
 	pos      uint64
 }
@@ -50,14 +51,14 @@ type pack struct {
 }
 
 func New(filename string) (*Log, error) {
-	l := &Log{filename: filename, in: make(chan pack)}
+	l := &Log{filename: filename, in: make(chan pack), quit: make(chan chan struct{})}
 
 	f, err := os.Create(filename)
 	if err != nil {
 		return nil, err
 	}
 	l.f = f
-	go l.run()
+	go l.run(0)
 	return l, nil
 }
 
@@ -71,10 +72,17 @@ func Recover(filename string) (*Log, error) {
 		return l, nil
 	}
 
-	l := &Log{filename: filename, f: f, in: make(chan pack), nextSeq: 0xFFFFFFFFFFFFFFFF}
+	l := &Log{
+		filename: filename,
+		f:        f,
+		in:       make(chan pack),
+		quit:     make(chan chan struct{}),
+		nextSeq:  0xFFFFFFFFFFFFFFFF,
+	}
 	c := &Consumer{f: f, l: l, buf: bufio.NewReader(f)}
 
 	var lastMsg Msg
+	first := true
 	for {
 		msg, err := c.Next()
 		if err != nil {
@@ -85,18 +93,22 @@ func Recover(filename string) (*Log, error) {
 			break
 		}
 
+		first = false
 		lastMsg = msg
 	}
 
 	f.Close()
 
-	size := lastMsg.Pos + lastMsg.TotalSize()
+	var size uint64
+	if !first {
+		size = lastMsg.Pos + lastMsg.TotalSize()
+	}
 	err = os.Truncate(filename, int64(size))
 	if err != nil {
 		return nil, err
 	}
 
-	f, err = os.OpenFile(filename, os.O_APPEND, 0)
+	f, err = os.OpenFile(filename, os.O_APPEND|os.O_WRONLY, 0)
 	if err != nil {
 		return nil, err
 	}
@@ -105,7 +117,7 @@ func Recover(filename string) (*Log, error) {
 	l.nextSeq = lastMsg.Seq + 1
 	l.f = f
 
-	go l.run()
+	go l.run(lastMsg.Pos)
 
 	return l, nil
 }
@@ -127,7 +139,8 @@ func encodeUint(x uint64, buf [9]byte) []byte {
 	return buf[i : uint64Size+1]
 }
 
-func (l *Log) run() {
+func (l *Log) run(currPos uint64) {
+	defer l.f.Close()
 	nextSeq := l.nextSeq
 	buffered := uint64(0)
 
@@ -136,7 +149,7 @@ func (l *Log) run() {
 
 	clk := time.Tick(time.Millisecond)
 
-	var prevPos, currPos uint64
+	var prevPos uint64
 	for {
 		select {
 		case p := <-l.in:
@@ -175,11 +188,18 @@ func (l *Log) run() {
 			if buf.Buffered() > 0 {
 				err := buf.Flush()
 				if err != nil {
-					log.Println(err)
+					log.Println("msglog write error:", err)
 				}
 				atomic.AddUint64(&l.nextSeq, buffered)
 				buffered = 0
 			}
+		case ret := <-l.quit:
+			err := buf.Flush()
+			if err != nil {
+				log.Println("msglog write error:", err)
+			}
+			ret <- struct{}{}
+			return
 		}
 	}
 }
@@ -189,5 +209,7 @@ func (l *Log) Push(msg Msg, data []byte) {
 }
 
 func (l *Log) Close() {
-	l.f.Close()
+	ret := make(chan struct{})
+	l.quit <- ret
+	<-ret
 }
